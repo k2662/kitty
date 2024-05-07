@@ -199,10 +199,16 @@ glfw_cursor_shape_to_wayland_cursor_shape(GLFWCursorShape g) {
 }
 
 static void
+commit_window_surface(_GLFWwindow *window) {
+    // debug("Window %llu surface committed\n", window->id); dont log as every frame request causes a surface commit
+    wl_surface_commit(window->wl.surface);
+}
+
+static void
 commit_window_surface_if_safe(_GLFWwindow *window) {
     // we only commit if the buffer attached to the surface is the correct size,
     // which means that at least one frame is drawn after resizeFramebuffer()
-    if (!window->wl.waiting_for_swap_to_commit) wl_surface_commit(window->wl.surface);
+    if (!window->wl.waiting_for_swap_to_commit) commit_window_surface(window);
 }
 
 static void
@@ -349,24 +355,40 @@ _glfwWaylandIntegerWindowScale(_GLFWwindow *window) {
     return ans;
 }
 
-float
+double
 _glfwWaylandWindowScale(_GLFWwindow *window) {
-    float ans = _glfwWaylandIntegerWindowScale(window);
-    if (window->wl.fractional_scale) ans = window->wl.fractional_scale / 120.f;
+    double ans = _glfwWaylandIntegerWindowScale(window);
+    if (window->wl.fractional_scale) ans = window->wl.fractional_scale / 120.;
     return ans;
 }
 
 static void
-resizeFramebuffer(_GLFWwindow* window) {
-    float scale = _glfwWaylandWindowScale(window);
-    int scaled_width = (int)roundf(window->wl.width * scale);
-    int scaled_height = (int)roundf(window->wl.height * scale);
-    debug("Resizing framebuffer to: %dx%d window size: %dx%d at scale: %.2f\n",
-            scaled_width, scaled_height, window->wl.width, window->wl.height, scale);
-    wl_egl_window_resize(window->wl.native, scaled_width, scaled_height, 0, 0);
-    update_regions(window);
+wait_for_swap_to_commit(_GLFWwindow *window) {
     window->wl.waiting_for_swap_to_commit = true;
+    debug("Waiting for swap to commit Wayland surface for window: %llu\n", window->id);
+}
+
+static void
+resizeFramebuffer(_GLFWwindow* window) {
+    double scale = _glfwWaylandWindowScale(window);
+    int scaled_width = (int)round(window->wl.width * scale);
+    int scaled_height = (int)round(window->wl.height * scale);
+    debug("Resizing framebuffer of window: %llu to: %dx%d window size: %dx%d at scale: %.3f\n",
+            window->id, scaled_width, scaled_height, window->wl.width, window->wl.height, scale);
+    update_regions(window);
+    wait_for_swap_to_commit(window);
+    window->wl.framebuffer_size_at_last_resize.width = scaled_width;
+    window->wl.framebuffer_size_at_last_resize.height = scaled_height;
+    window->wl.framebuffer_size_at_last_resize.dirty = true;
     _glfwInputFramebufferSize(window, scaled_width, scaled_height);
+}
+
+void
+_glfwWaylandBeforeBufferSwap(_GLFWwindow* window) {
+    if (window->wl.framebuffer_size_at_last_resize.dirty) {
+        wl_egl_window_resize(window->wl.native, window->wl.framebuffer_size_at_last_resize.width, window->wl.framebuffer_size_at_last_resize.height, 0, 0);
+        window->wl.framebuffer_size_at_last_resize.dirty = false;
+    }
 }
 
 void
@@ -376,11 +398,11 @@ _glfwWaylandAfterBufferSwap(_GLFWwindow* window) {
         window->wl.temp_buffer_used_during_window_creation = NULL;
     }
     if (window->wl.waiting_for_swap_to_commit) {
-        debug("Waiting for swap to commit: swap has happened, window surface committed\n");
+        debug("Window %llu swapped committing surface\n", window->id);
         window->wl.waiting_for_swap_to_commit = false;
         // this is not really needed, since I think eglSwapBuffers() calls wl_surface_commit()
         // but lets be safe. See https://gitlab.freedesktop.org/mesa/mesa/-/blob/main/src/egl/drivers/dri2/platform_wayland.c#L1510
-        wl_surface_commit(window->wl.surface);
+        commit_window_surface(window);
     }
 }
 
@@ -395,9 +417,9 @@ clipboard_mime(void) {
 
 static void
 apply_scale_changes(_GLFWwindow *window, bool resize_framebuffer, bool update_csd) {
-    float scale = _glfwWaylandWindowScale(window);
+    double scale = _glfwWaylandWindowScale(window);
     if (resize_framebuffer) resizeFramebuffer(window);
-    _glfwInputWindowContentScale(window, scale, scale);
+    _glfwInputWindowContentScale(window, (float)scale, (float)scale);
     if (update_csd) csd_set_visible(window, true);  // resize the csd iff the window currently has CSD
     int buffer_scale = window->wl.fractional_scale ? 1 : (int)scale;
     wl_surface_set_buffer_scale(window->wl.surface, buffer_scale);
@@ -415,7 +437,7 @@ dispatchChangesAfterConfigure(_GLFWwindow *window, int32_t width, int32_t height
     }
 
     if (scale_changed) {
-        debug("Scale changed to %.2f in dispatchChangesAfterConfigure\n", _glfwWaylandWindowScale(window));
+        debug("Scale changed to %.3f in dispatchChangesAfterConfigure for window: %llu\n", _glfwWaylandWindowScale(window), window->id);
         apply_scale_changes(window, !size_changed, false);
     }
 
@@ -427,8 +449,8 @@ dispatchChangesAfterConfigure(_GLFWwindow *window, int32_t width, int32_t height
 static void
 inform_compositor_of_window_geometry(_GLFWwindow *window, const char *event) {
 #define geometry window->wl.decorations.geometry
-    debug("Setting window \"visible area\" geometry in %s event: x=%d y=%d %dx%d viewport: %dx%d\n",
-            event, geometry.x, geometry.y, geometry.width, geometry.height, window->wl.width, window->wl.height);
+    debug("Setting window %llu \"visible area\" geometry in %s event: x=%d y=%d %dx%d viewport: %dx%d\n",
+            window->id, event, geometry.x, geometry.y, geometry.width, geometry.height, window->wl.width, window->wl.height);
     xdg_surface_set_window_geometry(window->wl.xdg.surface, geometry.x, geometry.y, geometry.width, geometry.height);
     if (window->wl.wp_viewport) wp_viewport_set_destination(window->wl.wp_viewport, window->wl.width, window->wl.height);
 #undef geometry
@@ -443,7 +465,7 @@ xdgDecorationHandleConfigure(void* data,
     _GLFWwindow* window = data;
     window->wl.pending.decoration_mode = mode;
     window->wl.pending_state |= PENDING_STATE_DECORATION;
-    debug("XDG decoration configure event received: has_server_side_decorations: %d\n", (mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE));
+    debug("XDG decoration configure event received for window %llu: has_server_side_decorations: %d\n", window->id, (mode == ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE));
 }
 
 static const struct zxdg_toplevel_decoration_v1_listener xdgDecorationListener = {
@@ -468,7 +490,7 @@ static void surfaceHandleEnter(void *data,
     window->wl.monitors[window->wl.monitorsCount++] = monitor;
 
     if (checkScaleChange(window)) {
-        debug("Scale changed to %.2f in surfaceHandleEnter\n", _glfwWaylandWindowScale(window));
+        debug("Scale changed to %.3f for window %llu in surfaceHandleEnter\n", _glfwWaylandWindowScale(window), window->id);
         apply_scale_changes(window, true, true);
     }
 }
@@ -492,7 +514,7 @@ static void surfaceHandleLeave(void *data,
     window->wl.monitors[--window->wl.monitorsCount] = NULL;
 
     if (checkScaleChange(window)) {
-        debug("Scale changed to %.2f in surfaceHandleLeave\n", _glfwWaylandWindowScale(window));
+        debug("Scale changed to %.3f for window %llu in surfaceHandleLeave\n", _glfwWaylandWindowScale(window), window->id);
         apply_scale_changes(window, true, true);
     }
 }
@@ -503,7 +525,7 @@ surface_preferred_buffer_scale(void *data, struct wl_surface *surface UNUSED, in
     _GLFWwindow* window = data;
     window->wl.once.preferred_scale_received = true;
     if ((int)window->wl.integer_scale.preferred == scale && window->wl.window_fully_created) return;
-    debug("Preferred integer buffer scale changed to: %d\n", scale);
+    debug("Preferred integer buffer scale changed to: %d for window %llu\n", scale, window->id);
     window->wl.integer_scale.preferred = scale;
     window->wl.window_fully_created = true;
     if (!window->wl.fractional_scale) apply_scale_changes(window, true, true);
@@ -530,7 +552,7 @@ fractional_scale_preferred_scale(void *data, struct wp_fractional_scale_v1 *wp_f
     _GLFWwindow *window = data;
     window->wl.once.fractional_scale_received = true;
     if (scale == window->wl.fractional_scale && window->wl.window_fully_created) return;
-    debug("Fractional scale requested: %u/120 = %.2f\n", scale, scale / 120.);
+    debug("Fractional scale requested: %u/120 = %.2f for window %llu\n", scale, scale / 120., window->id);
     window->wl.fractional_scale = scale;
     // Hyprland sends a fraction scale = 1 event before configuring the xdg surface and then another after with the correct scale
     window->wl.window_fully_created = window->wl.once.surface_configured || scale != 120;
@@ -584,7 +606,7 @@ static bool createSurface(_GLFWwindow* window,
     window->wl.integer_scale.deduced = scale;
     if (_glfw.wl.has_preferred_buffer_scale) { scale = 1; window->wl.integer_scale.preferred = 1; }
 
-    debug("Creating window at size: %dx%d and scale %d\n", wndconfig->width, wndconfig->height, scale);
+    debug("Creating window %llu at size: %dx%d and scale %d\n", window->id, wndconfig->width, wndconfig->height, scale);
     window->wl.native = wl_egl_window_create(window->wl.surface, wndconfig->width * scale, wndconfig->height * scale);
     if (!window->wl.native)
         return false;
@@ -643,7 +665,7 @@ xdgToplevelHandleConfigure(void* data,
     float targetRatio;
     enum xdg_toplevel_state* state;
     uint32_t new_states = 0;
-    debug("XDG top-level configure event: size: %dx%d states: ", width, height);
+    debug("XDG top-level configure event for window %llu: size: %dx%d states: ", window->id, width, height);
 
     wl_array_for_each(state, states) {
         switch (*state) {
@@ -725,7 +747,7 @@ xdg_toplevel_configure_bounds(void *data, struct xdg_toplevel *xdg_toplevel UNUS
     _GLFWwindow *window = data;
     window->wl.xdg.top_level_bounds.width = width;
     window->wl.xdg.top_level_bounds.height = height;
-    debug("Compositor set top-level bounds of: %dx%d\n", width, height);
+    debug("Compositor set top-level bounds of: %dx%d for window %llu\n", width, height, window->id);
 }
 
 static const struct xdg_toplevel_listener xdgToplevelListener = {
@@ -739,15 +761,20 @@ static const struct xdg_toplevel_listener xdgToplevelListener = {
 
 static void
 apply_xdg_configure_changes(_GLFWwindow *window) {
+    bool suspended_changed = false;
     if (window->wl.pending_state & PENDING_STATE_TOPLEVEL) {
         uint32_t new_states = window->wl.pending.toplevel_states;
         int width = window->wl.pending.width;
         int height = window->wl.pending.height;
         if (!window->wl.once.surface_configured) {
             window->swaps_disallowed = false;
-            window->wl.waiting_for_swap_to_commit = true;
+            wait_for_swap_to_commit(window);
             window->wl.once.surface_configured = true;
         }
+
+#ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
+        suspended_changed = ((new_states & TOPLEVEL_STATE_SUSPENDED) != (window->wl.current.toplevel_states & TOPLEVEL_STATE_SUSPENDED));
+#endif
 
         if (new_states != window->wl.current.toplevel_states ||
                 width != window->wl.current.width ||
@@ -774,12 +801,17 @@ apply_xdg_configure_changes(_GLFWwindow *window) {
         csd_set_window_geometry(window, &width, &height);
         bool resized = dispatchChangesAfterConfigure(window, width, height);
         csd_set_visible(window, !(window->wl.decorations.serverSide || window->monitor || window->wl.current.toplevel_states & TOPLEVEL_STATE_FULLSCREEN));
-        debug("Final window content size: %dx%d resized: %d\n", width, height, resized);
+        debug("Final window %llu content size: %dx%d resized: %d\n", window->id, width, height, resized);
     }
 
     inform_compositor_of_window_geometry(window, "configure");
     commit_window_surface_if_safe(window);
     window->wl.pending_state = 0;
+#ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
+    if (suspended_changed) {
+        _glfwInputWindowOcclusion(window, window->wl.current.toplevel_states & TOPLEVEL_STATE_SUSPENDED);
+    }
+#endif
 }
 
 typedef union pixel {
@@ -856,15 +888,15 @@ attach_temp_buffer_during_window_creation(_GLFWwindow *window) {
     }
     if (!window->wl.temp_buffer_used_during_window_creation) return false;
     wl_surface_attach(window->wl.surface, window->wl.temp_buffer_used_during_window_creation, 0, 0);
-    wl_surface_commit(window->wl.surface);
-    debug("Attached temp buffer during window creation of size: %dx%d and rgba(%u, %u, %u, %u)\n", width, height, color.red, color.green, color.blue, color.alpha);
+    debug("Attached temp buffer during window %llu creation of size: %dx%d and rgba(%u, %u, %u, %u)\n", window->id, width, height, color.red, color.green, color.blue, color.alpha);
+    commit_window_surface(window);
     return true;
 }
 
 static void
 loop_till_window_fully_created(_GLFWwindow *window) {
     if (!window->wl.window_fully_created) {
-        debug("Waiting for compositor to send fractional scale for window\n");
+        debug("Waiting for compositor to send fractional scale for window %llu\n", window->id);
         monotonic_t start = monotonic();
         while (!window->wl.window_fully_created && monotonic() - start < ms_to_monotonic_t(300)) {
             if (wl_display_roundtrip(_glfw.wl.display) == -1) {
@@ -888,7 +920,7 @@ xdgSurfaceHandleConfigure(void* data, struct xdg_surface* surface, uint32_t seri
     // or buffer state query.
     _GLFWwindow* window = data;
     xdg_surface_ack_configure(surface, serial);
-    debug("XDG surface configure event received and acknowledged\n");
+    debug("XDG surface configure event received and acknowledged for window %llu\n", window->id);
     apply_xdg_configure_changes(window);
     if (!window->wl.window_fully_created) {
         if (!attach_temp_buffer_during_window_creation(window)) window->wl.window_fully_created = true;
@@ -986,7 +1018,7 @@ layer_surface_handle_configure(void* data, struct zwlr_layer_surface_v1* surface
     _GLFWwindow* window = data;
     if (!window->wl.once.surface_configured) {
         window->swaps_disallowed = false;
-        window->wl.waiting_for_swap_to_commit = true;
+        wait_for_swap_to_commit(window);
         window->wl.once.surface_configured = true;
     }
     GLFWvidmode m = {0};
@@ -1039,7 +1071,7 @@ create_layer_shell_surface(_GLFWwindow *window) {
     }
     zwlr_layer_surface_v1_add_listener(ls, &zwlr_layer_surface_v1_listener, window);
     layer_set_properties(window);
-    wl_surface_commit(window->wl.surface);
+    commit_window_surface(window);
     wl_display_roundtrip(_glfw.wl.display);
 #undef ls
     return true;
@@ -1108,7 +1140,7 @@ create_window_desktop_surface(_GLFWwindow* window)
         setXdgDecorations(window);
     }
 
-    wl_surface_commit(window->wl.surface);
+    commit_window_surface(window);
     wl_display_roundtrip(_glfw.wl.display);
 
     return true;
@@ -1494,11 +1526,11 @@ void _glfwPlatformGetFramebufferSize(_GLFWwindow* window,
                                      int* width, int* height)
 {
     _glfwPlatformGetWindowSize(window, width, height);
-    float fscale = _glfwWaylandWindowScale(window);
+    double fscale = _glfwWaylandWindowScale(window);
     if (width)
-        *width = (int)roundf(*width * fscale);
+        *width = (int)round(*width * fscale);
     if (height)
-        *height = (int)roundf(*height * fscale);
+        *height = (int)round(*height * fscale);
 }
 
 void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
@@ -1521,7 +1553,7 @@ void _glfwPlatformGetWindowFrameSize(_GLFWwindow* window,
 void _glfwPlatformGetWindowContentScale(_GLFWwindow* window,
                                         float* xscale, float* yscale)
 {
-    float fscale = _glfwWaylandWindowScale(window);
+    float fscale = (float)_glfwWaylandWindowScale(window);
     if (xscale)
         *xscale = fscale;
     if (yscale)
@@ -1588,7 +1620,7 @@ void _glfwPlatformHideWindow(_GLFWwindow* window)
 
 static void
 request_attention(GLFWwindow *window, const char *token, void *data UNUSED) {
-    if (window && token && token[0]) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, token, ((_GLFWwindow*)window)->wl.surface);
+    if (window && token && token[0] && _glfw.wl.xdg_activation_v1) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, token, ((_GLFWwindow*)window)->wl.surface);
 }
 
 static bool
@@ -1613,9 +1645,9 @@ int _glfwPlatformWindowBell(_GLFWwindow* window UNUSED)
 static void
 focus_window(GLFWwindow *window, const char *token, void *data UNUSED) {
     if (!window) return;
-    if (token && token[0]) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, token, ((_GLFWwindow*)window)->wl.surface);
+    if (token && token[0] && _glfw.wl.xdg_activation_v1) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, token, ((_GLFWwindow*)window)->wl.surface);
     else {
-        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Window focus request via xdg-activation protocol was denied by the compositor. Use a better compositor.");
+        _glfwInputError(GLFW_PLATFORM_ERROR, "Wayland: Window focus request via xdg-activation protocol was denied or is unsupported by the compositor. Use a better compositor.");
     }
 }
 
@@ -1644,6 +1676,9 @@ int _glfwPlatformWindowFocused(_GLFWwindow* window)
 
 int _glfwPlatformWindowOccluded(_GLFWwindow* window UNUSED)
 {
+#ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
+    return (window->wl.current.toplevel_states & TOPLEVEL_STATE_SUSPENDED) != 0;
+#endif
     return false;
 }
 
@@ -2654,7 +2689,7 @@ GLFWAPI struct wl_surface* glfwGetWaylandWindow(GLFWwindow* handle)
 GLFWAPI void glfwWaylandActivateWindow(GLFWwindow* handle, const char *activation_token) {
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFW_REQUIRE_INIT();
-    if (activation_token && activation_token[0]) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, activation_token, window->wl.surface);
+    if (activation_token && activation_token[0] && _glfw.wl.xdg_activation_v1) xdg_activation_v1_activate(_glfw.wl.xdg_activation_v1, activation_token, window->wl.surface);
 }
 
 GLFWAPI void glfwWaylandRunWithActivationToken(GLFWwindow *handle, GLFWactivationcallback cb, void *cb_data) {

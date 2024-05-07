@@ -256,6 +256,7 @@ window_close_callback(GLFWwindow* window) {
 static void
 window_occlusion_callback(GLFWwindow *window, bool occluded) {
     if (!set_callback_window(window)) return;
+    debug("OSWindow %llu occlusion state changed, occluded: %d\n", global_state.callback_os_window->id, occluded);
     if (!occluded) global_state.check_for_active_animated_images = true;
     request_tick_callback();
     global_state.callback_os_window = NULL;
@@ -442,12 +443,17 @@ static void
 cursor_enter_callback(GLFWwindow *w, int entered) {
     if (!set_callback_window(w)) return;
     if (entered) {
+        double x, y;
+        glfwGetCursorPos(w, &x, &y);
+        debug_input("Mouse cursor entered window: %llu at %fx%f\n", global_state.callback_os_window->id, x, y);
         show_mouse_cursor(w);
         monotonic_t now = monotonic();
         global_state.callback_os_window->last_mouse_activity_at = now;
+        global_state.callback_os_window->mouse_x = x * global_state.callback_os_window->viewport_x_ratio;
+        global_state.callback_os_window->mouse_y = y * global_state.callback_os_window->viewport_y_ratio;
         if (is_window_ready_for_callbacks()) enter_event();
         request_tick_callback();
-    }
+    } else debug_input("Mouse cursor left window: %llu", global_state.callback_os_window->id);
     global_state.callback_os_window = NULL;
 }
 
@@ -457,8 +463,17 @@ mouse_button_callback(GLFWwindow *w, int button, int action, int mods) {
     show_mouse_cursor(w);
     mods_at_last_key_or_button_event = mods;
     monotonic_t now = monotonic();
-    global_state.callback_os_window->last_mouse_activity_at = now;
+    OSWindow *window = global_state.callback_os_window;
+    window->last_mouse_activity_at = now;
     if (button >= 0 && (unsigned int)button < arraysz(global_state.callback_os_window->mouse_button_pressed)) {
+        if (!window->has_received_cursor_pos_event) {  // ensure mouse position is correct
+            window->has_received_cursor_pos_event = true;
+            double x, y;
+            glfwGetCursorPos(w, &x, &y);
+            window->mouse_x = x * window->viewport_x_ratio;
+            window->mouse_y = y * window->viewport_y_ratio;
+            if (is_window_ready_for_callbacks()) mouse_event(-1, mods, -1);
+        }
         global_state.callback_os_window->mouse_button_pressed[button] = action == GLFW_PRESS ? true : false;
         if (is_window_ready_for_callbacks()) mouse_event(button, mods, action);
     }
@@ -475,6 +490,7 @@ cursor_pos_callback(GLFWwindow *w, double x, double y) {
     global_state.callback_os_window->cursor_blink_zero_time = now;
     global_state.callback_os_window->mouse_x = x * global_state.callback_os_window->viewport_x_ratio;
     global_state.callback_os_window->mouse_y = y * global_state.callback_os_window->viewport_y_ratio;
+    global_state.callback_os_window->has_received_cursor_pos_event = true;
     if (is_window_ready_for_callbacks()) mouse_event(-1, mods_at_last_key_or_button_event, -1);
     request_tick_callback();
     global_state.callback_os_window = NULL;
@@ -1191,9 +1207,7 @@ create_os_window(PyObject UNUSED *self, PyObject *args, PyObject *kw) {
     if (temp_window) { glfwDestroyWindow(temp_window); temp_window = NULL; }
     if (glfw_window == NULL) { PyErr_SetString(PyExc_ValueError, "Failed to create GLFWwindow"); return NULL; }
     glfwMakeContextCurrent(glfw_window);
-    if (is_first_window) {
-        gl_init();
-    }
+    if (is_first_window) gl_init();
     // Will make the GPU automatically apply SRGB gamma curve on the resulting framebuffer
     glEnable(GL_FRAMEBUFFER_SRGB);
     bool is_semi_transparent = glfwGetWindowAttrib(glfw_window, GLFW_TRANSPARENT_FRAMEBUFFER);
@@ -1405,6 +1419,11 @@ dbus_user_notification_activated(uint32_t notification_id, const char* action) {
     call_boss(dbus_notification_callback, "Oks", Py_True, nid, action);
 }
 #endif
+
+static PyObject*
+opengl_version_string(PyObject *self UNUSED, PyObject *args UNUSED) {
+    return PyUnicode_FromString(global_state.gl_version ? gl_version_string() : "");
+}
 
 static PyObject*
 glfw_init(PyObject UNUSED *self, PyObject *args) {
@@ -2228,6 +2247,7 @@ static PyMethodDef module_methods[] = {
     METHODB(cocoa_hide_other_apps, METH_NOARGS),
     METHODB(cocoa_minimize_os_window, METH_VARARGS),
     {"glfw_init", (PyCFunction)glfw_init, METH_VARARGS, ""},
+    METHODB(opengl_version_string, METH_NOARGS),
     {"glfw_terminate", (PyCFunction)glfw_terminate, METH_NOARGS, ""},
     {"glfw_get_physical_dpi", (PyCFunction)glfw_get_physical_dpi, METH_NOARGS, ""},
     {"glfw_get_key_name", (PyCFunction)glfw_get_key_name, METH_VARARGS, ""},

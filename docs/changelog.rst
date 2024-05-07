@@ -50,10 +50,34 @@ consumption to do the same tasks.
 Detailed list of changes
 -------------------------------------
 
-0.34.1 [future]
+0.35.0 [future]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+- :opt:`paste_actions`: Fix ``replace-newline`` not working with ``confirm`` (:iss:`7374`)
+
+- Graphics: Fix aspect ratio of images not being preserved when only a single
+  dimension of the destination rectangle is specified (:iss:`7380`)
+
+- :ac:`focus_visible_window`: Fix selecting with mouse click leaving keyboard in unusable state (:iss:`7390`)
+
+- Wayland: Fix infinite loop causing bad performance when using IME via fcitx5 due to a change in fcitx5 (:iss:`7396`)
+
+- Improve rendering of Unicode shade character to avoid Moire patterns (:pull:`7401`)
+
+- kitten @ send-key: Fix some keys being sent in kitty keyboard protocol encoding when not using socket for remote control
+
+- Dont clear selections on erase in screen commands unless the erased region intersects a selection (:iss:`7408`)
+
+- Wayland: save energy by not rendering "suspended" windows on compositors that support that
+
+0.34.1 [2024-04-19]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - Wayland KDE: Fix window background blur not adapting when window is grown. Also fix turning it on and off not working. (:iss:`7351`)
+
+- Wayland GNOME: Draw the titlebar buttons without using a font (:iss:`7349`)
+
+- Fix a regression in the previous release that caused incorrect font selection when using variable fonts on Linux (:iss:`7361`)
 
 0.34.0 [2024-04-15]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1266,7 +1290,7 @@ Detailed list of changes
 - macOS: Fix keyboard input not working after toggling fullscreen till the
   window is clicked in
 
-- A new mappable action ``nth_os_window`` to to focus the specified nth OS
+- A new mappable action ``nth_os_window`` to focus the specified nth OS
   window. (:pull:`4316`)
 
 - macOS: The kitty window can be scrolled by the mouse wheel when OS window not

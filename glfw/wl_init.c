@@ -222,7 +222,7 @@ pointer_handle_frame(void *data UNUSED, struct wl_pointer *pointer UNUSED) {
     memset(&info, 0, sizeof(info));
 
     if (x != 0.0f || y != 0.0f) {
-        float scale = _glfwWaylandWindowScale(window);
+        float scale = (float)_glfwWaylandWindowScale(window);
         y *= scale; x *= scale;
         _glfwInputScroll(window, x, y, highres, _glfw.wl.xkb.states.modifiers);
     }
@@ -521,7 +521,9 @@ static void registryHandleGlobal(void* data UNUSED,
     else if (is(xdg_wm_base))
     {
         _glfw.wl.xdg_wm_base_version = 1;
-#ifdef XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION
+#ifdef XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION
+        _glfw.wl.xdg_wm_base_version = MIN(XDG_TOPLEVEL_STATE_SUSPENDED_SINCE_VERSION, (int)version);
+#elif defined(XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION)
         _glfw.wl.xdg_wm_base_version = MIN(XDG_TOPLEVEL_WM_CAPABILITIES_SINCE_VERSION, (int)version);
 #endif
         _glfw.wl.wmBase = wl_registry_bind(registry, name, &xdg_wm_base_interface, _glfw.wl.xdg_wm_base_version);

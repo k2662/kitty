@@ -434,10 +434,10 @@ bool _glfwStringInExtensionString(const char* string, const char* extensions)
 
 GLFWAPI void glfwMakeContextCurrent(GLFWwindow* handle)
 {
+    _GLFW_REQUIRE_INIT();
+
     _GLFWwindow* window = (_GLFWwindow*) handle;
     _GLFWwindow* previous = _glfwPlatformGetTls(&_glfw.contextSlot);
-
-    _GLFW_REQUIRE_INIT();
 
     if (window && window->context.client == GLFW_NO_API)
     {
@@ -476,6 +476,9 @@ GLFWAPI void glfwSwapBuffers(GLFWwindow* handle)
         return;
     }
 
+#ifdef _GLFW_WAYLAND
+    _glfwWaylandBeforeBufferSwap(window);
+#endif
     window->context.swapBuffers(window);
 #ifdef _GLFW_WAYLAND
     _glfwWaylandAfterBufferSwap(window);
